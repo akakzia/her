@@ -19,7 +19,7 @@ def main(args):
         tf.set_random_seed(int(args['random_seed']))
         env.seed(int(args['random_seed']))
 
-        state_dim = 2*env.observation_space.shape[0]
+        state_dim = env.observation_space.shape[0]
         action_dim = env.action_space.shape[0]
         action_bound = env.action_space.high
         # Ensure action bound is symmetric
@@ -79,7 +79,7 @@ if __name__ == '__main__':
 
     # run parameters
     parser.add_argument('--env', help='choose the gym env- tested on {Pendulum-v0}', default=id)
-    parser.add_argument('--random-seed', help='random seed for repeatability', default=1234)
+    parser.add_argument('--random-seed', help='random seed for repeatability', default=1236)
     parser.add_argument('--epochs', help='number of epochs', default=10)
     parser.add_argument('--max-episodes', help='max num of episodes per epoch to do while training', default=150)
     parser.add_argument('--max-episode-len', help='max length of 1 episode', default=101)
