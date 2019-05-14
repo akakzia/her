@@ -2,6 +2,7 @@ import numpy as np
 import tensorflow as tf
 from replay_buffer import ReplayBuffer
 import matplotlib.pyplot as plt
+import time
 
 
 def visualize_evaluations(table, save=False):
@@ -20,27 +21,33 @@ def visualize_evaluations(table, save=False):
 # ===========================
 def build_summaries():
     episode_reward = tf.Variable(0.)
-    tf.summary.scalar("Reward", episode_reward)
+    r = tf.summary.scalar("Reward", episode_reward)
     episode_ave_max_q = tf.Variable(0.)
-    tf.summary.scalar("Qmax Value", episode_ave_max_q)
+    q = tf.summary.scalar("Qmax Value", episode_ave_max_q)
+    success_rate = tf.Variable(0.)
+    s = tf.summary.scalar("Success rate", success_rate)
 
-    summary_vars = [episode_reward, episode_ave_max_q]
-    summary_ops = tf.summary.merge_all()
+    summary_vars_1 = [episode_reward, episode_ave_max_q]
+    summary_vars_2 = [success_rate]
+    summary_first = tf.summary.merge([r, q])
+    summary_second = tf.summary.merge([s])
 
-    return summary_ops, summary_vars
+    return summary_first, summary_second, summary_vars_1, summary_vars_2
 
 
 # ===========================
 #   Agent Training
 # ===========================
 
-def train(sess, env, args, actor, critic, actor_noise):
+def train(sess, saver, env, args, actor, critic, actor_noise):
 
     # Set up summary Ops
-    summary_ops, summary_vars = build_summaries()
+    summary_first, summary_second, summary_vars_1, summary_vars_2 = build_summaries()
 
     sess.run(tf.global_variables_initializer())
-    writer = tf.summary.FileWriter(args['summary_dir'], sess.graph)
+    if args['HER']:
+        args['summary_dir'] = args['summary_dir'] + '+her'
+    writer = tf.summary.FileWriter("{0}-{1}".format(args['summary_dir'], int(time.time())), sess.graph)
 
     # Initialize target network weights
     actor.update_target_network()
@@ -53,13 +60,14 @@ def train(sess, env, args, actor, critic, actor_noise):
     # This hurts the performance on Pendulum but could be useful
     # in other environments.
     # tflearn.is_training(True)
-    evaluations = [0]
+    # evaluations = [0]
     for epoch in range(int(args['epochs'])):
         print('=========== EPOCH {:d} ==========='.format(epoch+1))
         success = 0.
+        tasks = env.unwrapped.sample_tasks(int(args['max_episodes']))
         for i in range(int(args['max_episodes'])):
 
-            s = env.reset()
+            s = env.reset_task(tasks[i])
             ep_reward = 0
             ep_ave_max_q = 0
             episode = []
@@ -72,10 +80,9 @@ def train(sess, env, args, actor, critic, actor_noise):
                 # a = actor.predict(np.reshape(s, (1, 3))) + (1. / (1. + i))
                 k = np.random.uniform(0, 1)
                 if k < 0.1:
-                    a = np.random.uniform(-1, 1, 2)
+                    a = [np.random.uniform(-1, 1, 2)]
                 else:
                     a = actor.predict(np.reshape(s, (1, actor.s_dim))) + actor_noise()
-
                 s2, r, terminal, info = env.step(a[0])
                 episode.append((s, r, terminal, s2))
                 replay_buffer.add(np.reshape(s, (actor.s_dim,)), np.reshape(a, (actor.a_dim,)), r,
@@ -117,27 +124,50 @@ def train(sess, env, args, actor, critic, actor_noise):
                 ep_reward += r
 
                 if terminal:
-                    if ep_reward > -int(args['max_episode_len']):
+                    if ep_reward == 1:
                         success += 1
-                    summary_str = sess.run(summary_ops, feed_dict={
-                        summary_vars[0]: ep_reward,
-                        summary_vars[1]: ep_ave_max_q / float(j)
+                    summary_str_1 = sess.run(summary_first, feed_dict={
+                        summary_vars_1[0]: ep_reward,
+                        summary_vars_1[1]: ep_ave_max_q / float(j)
                     })
 
-                    writer.add_summary(summary_str, i)
+                    writer.add_summary(summary_str_1, i + int(args['max_episodes']) * epoch)
                     writer.flush()
 
                     print('| Reward: {:d} | Episode: {:d} | Qmax: {:.4f}'.format(int(ep_reward), \
-                            i, (ep_ave_max_q / float(j))))
-                    for state, reward, done, next_state in episode:
-                        new_goal = next_state
-                        fictive_reward = 0
-                        d = True
-                        new_state = np.concatenate((state[:4], new_goal[:4]))
-                        new_next_state = np.concatenate((next_state[:4], new_goal[:4]))
-                        replay_buffer.add(np.reshape(new_state, (actor.s_dim,)), np.reshape(a, (actor.a_dim,)), fictive_reward,
-                                          d, np.reshape(new_next_state, (actor.s_dim,)))
+                          i, (ep_ave_max_q / float(j))))
+                    if args['HER']:
+                        """for state, reward, done, next_state in episode:
+                            new_goal = next_state
+                            fictive_reward = 1
+                            d = True
+                            new_state = np.concatenate((state[:4], new_goal[:4]))
+                            new_next_state = np.concatenate((next_state[:4], new_goal[:4]))
+                            replay_buffer.add(np.reshape(new_state, (actor.s_dim,)), np.reshape(a, (actor.a_dim,)), fictive_reward,
+                                              d, np.reshape(new_next_state, (actor.s_dim,)))"""
+                        if len(episode) == int(args['max_episode_len']):
+                            for t in np.random.choice(len(episode), 10):
+                                new_goal = episode[t][-1]
+                                for state, reward, done, next_state in episode[:t]:
+                                    new_state = np.concatenate((state[:4], new_goal[:4]))
+                                    new_next_state = np.concatenate((next_state[:4], new_goal[:4]))
+                                    fictive_reward = 0
+                                    d = False
+                                    if new_next_state.all() == new_goal.all():
+                                        fictive_reward = 1
+                                        d = True
+                                    replay_buffer.add(np.reshape(new_state, (actor.s_dim,)), np.reshape(a, (actor.a_dim,)),
+                                                      fictive_reward, d, np.reshape(new_next_state, (actor.s_dim,)))
                     break
         success_rate = success / int(args['max_episodes'])
-        evaluations.append(success_rate)
-    visualize_evaluations(evaluations, save=False)
+        summary_str_2 = sess.run(summary_second, feed_dict={
+            summary_vars_2[0]: success_rate
+        })
+
+        writer.add_summary(summary_str_2, epoch)
+        writer.flush()
+        if epoch % 10 == 0:
+            save_path = saver.save(sess, './models/modified/model-{0}.ckpt'.format(epoch))
+            print("Model saved in path: %s" % save_path)
+        # evaluations.append(success_rate)
+    # visualize_evaluations(evaluations, save=False)
